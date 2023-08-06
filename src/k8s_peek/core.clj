@@ -2,17 +2,25 @@
   (:require [kubernetes-api.core :as k8s]
             [yaml.core :as yaml]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.pprint :as pp])
   (:gen-class))
+
+(defmacro ppr [args]
+  `(println (binding [pp/*print-right-margin* 60]
+              (str/replace 
+               (with-out-str (pp/pprint ~args))
+               #"\\n" "\n"))))
 
 (defn read-cluster-config [name]
   (let [kubecfg (yaml/from-file (io/file (System/getenv "HOME") ".kube" "config"))
         fetch-key (fn [section keys]
                     (->> kubecfg
-                      section
-                      (some #(when (= (:name %) name)
-                               (get-in % keys)))))]
-    [(fetch-key :clusters [:cluster :server]) (fetch-key :users [:user :token])]))
+                         section
+                         (some #(when (= (:name %) name)
+                                  (get-in % keys)))))]
+    [(fetch-key :clusters [:cluster :server])
+     (fetch-key :users [:user :token])]))
 
 (defn show-node [node]
   ;;(pp/pprint node)
@@ -36,7 +44,9 @@
   (when-let [volumes (get-in pod [:spec :volumes])]
     (println "   ** Volumes:")
     (doseq [v volumes]
-      (println "     Name:" (:name v)))))
+      (println "     Name:" (:name v))))
+  (println "Host IP:" (get-in pod [:status :hostIP]))
+  )
 
 (defn show-volume [vol]
   (println "Name:" (get-in vol [:metadata :name]))
@@ -47,8 +57,15 @@
 
 (defn show-service [svc]
   (println "Name:" (get-in svc [:metadata :name]))
-  (pp/pprint (select-keys (:spec svc) [:type :clusterIP :ports]))
-  )
+  (println (select-keys (:spec svc) [:type :clusterIP :ports])))
+
+(defn show-secret [sec]
+  (println "Name:" (get-in sec [:metadata :name]))
+  (println "Data:" (keys (:data sec))))
+
+(defn show-config-map [cfg]
+  (println "Name:" (get-in cfg [:metadata :name]))
+  (ppr (:data cfg)))
 
 (defn -main
   [& args]
@@ -63,18 +80,22 @@
     (println "Cluster API endpoint:" endpoint)
     (when-let [cluster (k8s/client endpoint {:token token
                                              :insecure? true})]
+      ;;(pp/pprint (k8s/explore cluster))
       (let [list-objects (fn [kind]
                            (get (k8s/invoke cluster {:kind kind
                                                      :action :list
                                                      :request {:namespace "default"}})
                                 :items))
             show-objects (fn [kind show-fn]
-                           (when-let [nodes (list-objects kind)]
+                           (when-let [objs (list-objects kind)]
                              (println (str "------- " (name kind) "s:"))
-                             (doseq [node nodes]
-                               (show-fn node))))]
+                             (doseq [obj objs]
+                               (show-fn obj))))]
+        ;; Requires permissions for each kind:
         (show-objects :Node show-node)
         (show-objects :Deployment show-deployment)
         (show-objects :Pod show-pod)
         (show-objects :PersistentVolume show-volume)
-        (show-objects :Service show-service)))))
+        (show-objects :Service show-service)
+        (show-objects :ConfigMap show-config-map)
+        (show-objects :Secret show-secret)))))
